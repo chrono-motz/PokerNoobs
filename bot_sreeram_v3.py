@@ -1,48 +1,47 @@
 '''
-Bot Sreeram — Enhanced Strategy Bot
-Combines equity-based play, opponent modeling, and aggressive preflop:
-  - Preflop: Wider ranges than baseline, steals more frequently
-  - Equity: Monte Carlo evaluation (40-50 rollouts) for post-flop decisions  
-  - Auction: Smart bidding based on equity uncertainty
-  - Post-flop: Aggressive value betting, bluffing against tight opponents
-  - Opponent modeling: Track fold/raise rates and exploit patterns
+Bot Sreeram v3 — Premium Strategy
+Combines best elements from all prior versions + v4_Auction insights:
+  - Preflop: Wide ranges with position-aware play
+  - Auction: Aggressive bidding (0.35x pot) like v4_Auction
+  - Equity: Monte Carlo 40-50 rollouts
+  - Post-flop: Information multiplier when opponent cards revealed
+  - Opponent modeling: Rank-based bluffing decisions
 '''
 from pkbot.actions import ActionFold, ActionCall, ActionCheck, ActionRaise, ActionBid
 from pkbot.states import GameInfo, PokerState
 from pkbot.base import BaseBot
 from pkbot.runner import parse_args, run_bot
-from poker_utils import mc_equity, chen_score
+from poker_utils import mc_equity, chen_score, RANK_MAP
 import random
 
 BIG_BLIND = 20
 SMALL_BLIND = 10
 
 class Player(BaseBot):
-    """
-    Enhanced poker bot with equity-based decisions and opponent profiling.
-    """
+    """Premium poker bot combining equity + aggressive auction play."""
+    
     def __init__(self):
-        # Opponent action tracking
+        # Opponent tracking
         self.opp_folds = 0
         self.opp_raises = 0
         self.opp_calls = 0
         self.opp_actions = 0
-        self.opp_bid_sum = 0
-        self.opp_bid_count = 0
         
-        # Hand-specific tracking
+        # Hand state
         self._chen = 0.0
-        self._pot_at_street_start = 0
-        self._previous_street = None
+        self._po = 0
+        self._ps = None
+        self._has_opponent_info = False
 
     def on_hand_start(self, game_info: GameInfo, current_state: PokerState) -> None:
         """Initialize hand variables."""
         self._chen = chen_score(current_state.my_hand[0], current_state.my_hand[1])
-        self._pot_at_street_start = 0
-        self._previous_street = None
+        self._po = BIG_BLIND if not current_state.is_bb else SMALL_BLIND
+        self._ps = 'pre-flop'
+        self._has_opponent_info = False
 
     def on_hand_end(self, game_info: GameInfo, current_state: PokerState) -> None:
-        """Learn from hand results - track opponent tendencies."""
+        """Learn from hand results."""
         pass
 
     # ────────────────────────────────────────────────────────────────────────
@@ -51,9 +50,9 @@ class Player(BaseBot):
     
     @property
     def fold_rate(self):
-        """Opponent's fold rate - use for bluffing decisions."""
+        """Opponent's fold rate."""
         if self.opp_actions < 10:
-            return 0.35  # Default assumption
+            return 0.35
         return self.opp_folds / max(1, self.opp_actions)
     
     @property
@@ -63,11 +62,23 @@ class Player(BaseBot):
             return 0.25
         return self.opp_raises / max(1, self.opp_actions)
 
-    def _track_opponent_action(self, state):
+    def _track_opponent(self, state):
         """Update opponent action counters."""
-        # This would be called to track opponent moves
-        # For now, basic structure in place
-        pass
+        if state.street != self._ps:
+            self._po = 0
+            self._ps = state.street
+        
+        d = state.opp_wager - self._po
+        if d > 0:
+            if state.opp_wager > state.my_wager:
+                self.opp_raises += 1
+            else:
+                self.opp_calls += 1
+            self.opp_actions += 1
+        
+        self._po = state.opp_wager
+        if len(state.opp_revealed_cards) > 0:
+            self._has_opponent_info = True
 
     # ────────────────────────────────────────────────────────────────────────
     # Main Decision Engine
@@ -75,6 +86,7 @@ class Player(BaseBot):
 
     def get_move(self, game_info: GameInfo, current_state: PokerState):
         """Core decision logic."""
+        self._track_opponent(current_state)
         street = current_state.street
 
         if street == 'pre-flop':
@@ -94,7 +106,7 @@ class Player(BaseBot):
         cost = state.cost_to_call
         is_sb = not state.is_bb
 
-        # Premium hands: strong 3-bets and value opens
+        # Premium hands: strong 3-bets
         if chen >= 10:
             if state.can_act(ActionRaise):
                 lo, hi = state.raise_bounds
@@ -102,99 +114,76 @@ class Player(BaseBot):
             return ActionCall() if state.can_act(ActionCall) else ActionCheck()
 
         # Strong hands: raise most positions
-        if chen >= 7:
-            if state.can_act(ActionRaise):
-                lo, hi = state.raise_bounds
-                return ActionRaise(min(hi, max(lo, int(3.0 * BIG_BLIND) + state.opp_wager)))
+        if chen >= 8:
+            if cost <= 5 * BIG_BLIND:
+                if state.can_act(ActionRaise):
+                    lo, hi = state.raise_bounds
+                    return ActionRaise(min(hi, max(lo, int(2.5 * BIG_BLIND) + state.opp_wager)))
+                return ActionCall() if state.can_act(ActionCall) else ActionCheck()
             return ActionCall() if state.can_act(ActionCall) else ActionCheck()
 
-        # Medium-good hands: call wider
-        if chen >= 5:
-            if cost <= 4 * BIG_BLIND:
+        # Medium hands: wider calling
+        if chen >= 6:
+            if cost <= 2 * BIG_BLIND:
                 return ActionCall() if state.can_act(ActionCall) else ActionCheck()
             return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
-        # Lower medium hands: much wider position play (KEY FIX)
-        if chen >= 3:
-            # SB: much wider stealing range
-            if is_sb:
-                # Always at least call if cheap
-                if cost <= BIG_BLIND:
-                    if state.can_act(ActionRaise) and random.random() < 0.50:
-                        lo, hi = state.raise_bounds
-                        return ActionRaise(min(hi, max(lo, int(2.5 * BIG_BLIND))))
-                    return ActionCall() if state.can_act(ActionCall) else ActionCheck()
-                return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
-            # BB: super wide defense
-            else:
-                if cost <= 2 * BIG_BLIND:
-                    return ActionCall() if state.can_act(ActionCall) else ActionCheck()
-                return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
-
-        # Weak hands: still play something from position
-        if chen >= 2 and not is_sb:
-            # BB defends even weaker hands
+        # Lower medium hands: position play
+        if chen >= 4:
             if cost <= BIG_BLIND:
                 return ActionCall() if state.can_act(ActionCall) else ActionCheck()
-        
+            return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
+
+        # Weak hands: position-dependent
+        if chen >= 3:
+            # SB: wider stealing
+            if is_sb and cost <= BIG_BLIND:
+                if state.can_act(ActionRaise) and random.random() < 0.50:
+                    lo, hi = state.raise_bounds
+                    return ActionRaise(min(hi, max(lo, int(2.5 * BIG_BLIND))))
+                return ActionCall() if state.can_act(ActionCall) else ActionCheck()
+            # BB: defend wider
+            if not is_sb and cost <= BIG_BLIND:
+                return ActionCall() if state.can_act(ActionCall) else ActionCheck()
+
         return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
     # ────────────────────────────────────────────────────────────────────────
-    # AUCTION STRATEGY
+    # AUCTION STRATEGY (AGGRESSIVE - V4_AUCTION STYLE)
     # ────────────────────────────────────────────────────────────────────────
 
     def _auction(self, state):
-        """Smart auction bidding using equity and uncertainty."""
-        # Simple but effective auction strategy
-        pot = state.pot
-        my_chips = state.my_chips
-        
+        """Aggressive auction bidding using equity and uncertainty."""
         try:
-            # Use MC equity to gauge hand strength (with flop community cards)
             equity = mc_equity(state.my_hand, list(state.board) if state.board else [], [], 40)
         except:
-            # Fallback if MC equity fails
             equity = 0.5
-        
-        # Uncertainty metric: how uncertain is the hand?
+
+        pot = state.pot
+        chips = state.my_chips
+
+        # Uncertainty metric
         uncertainty = 1.0 - abs(equity - 0.5) * 2
-        
-        # Aggressive bidding strategy that actually bids
-        if equity >= 0.78:
-            # Very strong hand: bid 20-25% of pot
-            bid = int(pot * 0.22)
-        elif equity >= 0.65:
-            # Strong hand: bid 15-18% of pot
-            bid = int(pot * 0.17)
-        elif equity >= 0.55:
-            # Moderate hand: bid 12-15% of pot
-            bid = int(pot * 0.14)
-        elif equity >= 0.45:
-            # Marginal hand: bid 8-12% of pot
-            bid = int(pot * 0.10)
-        else:
-            # Weak hand: still bid 5-8% (don't give up auctions for free!)
-            bid = int(pot * 0.07)
-        
-        # Apply uncertainty boost: bid more when marginal hands are unclear
-        if 0.40 < equity < 0.60:
-            bid = int(bid * (1.0 + uncertainty * 0.5))
-        
-        # Cap at 15% of chips
-        bid = min(bid, int(my_chips * 0.15))
-        
-        # Always bid at least 1, realistically at least 2-3
-        bid = max(2, bid)
-        
-        return ActionBid(bid)
+
+        # KEY FIX: Much more aggressive bidding like v4_Auction (0.35x instead of 0.22x)
+        bid_amount = pot * 0.35 * uncertainty
+
+        # Ensure minimum bid for strong hands
+        if equity > 0.70:
+            bid_amount = max(bid_amount, pot * 0.15)
+
+        # Cap at 18% of chips (v4 uses this)
+        bid_amount = min(bid_amount, chips * 0.18)
+
+        return ActionBid(max(1, int(bid_amount)))
 
     # ────────────────────────────────────────────────────────────────────────
     # POST-FLOP STRATEGY
     # ────────────────────────────────────────────────────────────────────────
 
     def _postflop(self, state, game_info):
-        """Post-flop: equity-based decisions with pot odds."""
-        # Quick time-out check
+        """Post-flop: equity-based with information multiplier."""
+        # Time management
         if game_info.time_bank < 2.0:
             if state.cost_to_call == 0:
                 return ActionCheck()
@@ -208,85 +197,84 @@ class Player(BaseBot):
             opp_revealed = list(state.opp_revealed_cards) if state.opp_revealed_cards else []
             equity = mc_equity(state.my_hand, list(state.board) if state.board else [], opp_revealed, rollouts)
         except:
-            # Fallback on MC error
             equity = 0.5
 
         pot = state.pot
         cost = state.cost_to_call
 
-        # Pot odds required
+        # KEY FIX: Information multiplier - boost bets when opponent cards are revealed
+        info_multiplier = 1.25 if self._has_opponent_info else 1.0
+
+        # Pot odds
         po = cost / (pot + cost + 1e-6) if cost > 0 else 0
 
-        # ─ STRONG EQUITY (75%+): Aggressive value betting ─
-        if equity >= 0.75:
-            return self._value_bet(state, aggressive=True)
+        # ─ STRONG EQUITY (80%+) ─
+        if equity >= 0.80:
+            return self._value_bet(state, aggressive=True, multiplier=info_multiplier)
 
-        # ─ GOOD EQUITY (60-75%): Strong value betting ─
-        if equity >= 0.60:
-            return self._value_bet(state, aggressive=True)
+        # ─ GOOD EQUITY (63%+) ─
+        if equity >= 0.63:
+            return self._value_bet(state, aggressive=False, multiplier=info_multiplier)
 
-        # ─ MODERATE EQUITY (45-60%): Betting draws and marginal hands ─
-        if equity >= 0.45:
+        # ─ MODERATE EQUITY (50%+) ─
+        if equity >= 0.50:
             if cost == 0:
-                # Can bet with draw
                 if state.can_act(ActionRaise):
                     lo, hi = state.raise_bounds
-                    bet = int(pot * 0.50)
+                    bet = int(pot * 0.45 * info_multiplier)
                     return ActionRaise(min(hi, max(lo, bet)))
                 return ActionCheck()
-            # Call draws
-            if equity > po:
+            if equity > po + 0.05:
                 return ActionCall() if state.can_act(ActionCall) else ActionCheck()
             return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
-        # ─ BLUFF EQUITY (25-45%): Bluff into weak opponents ─
-        if equity >= 0.25:
-            if cost == 0 and self.fold_rate > 0.25 and random.random() < 0.25:
-                # Bluff when opponent folds a lot
-                if state.can_act(ActionRaise):
-                    lo, hi = state.raise_bounds
-                    bet = int(pot * 0.50)
-                    return ActionRaise(min(hi, max(lo, bet)))
+        # ─ MARGINAL EQUITY (35-50%) ─
+        if equity >= 0.35:
             if cost == 0:
                 return ActionCheck()
-            # Can call smallish bets with air if odds are right
-            if cost <= pot * 0.25 and random.random() < 0.40:
+            if equity > po and cost <= pot * 0.35:
                 return ActionCall() if state.can_act(ActionCall) else ActionCheck()
-            return ActionFold() if state.can_act(ActionFold) else ActionCheck()
+            return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
-        # ─ WEAK EQUITY (<25%): Fold most, bluff rarely ─
-        if cost == 0:
-            # Check if opponent is very exploitable
-            if self.fold_rate > 0.40 and random.random() < 0.12:
-                if state.can_act(ActionRaise):
-                    lo, hi = state.raise_bounds
-                    bet = int(pot * 0.55)
-                    return ActionRaise(min(hi, max(lo, bet)))
-        
+        # ─ BLUFF EQUITY (20-35%): Rank-based bluffing ─
+        if equity >= 0.20 and self._has_opponent_info and cost == 0:
+            # Check opponent's revealed card rank
+            try:
+                opp_rank = RANK_MAP.get(state.opp_revealed_cards[0][0], 0)
+                # Bluff more against weak cards
+                if opp_rank <= 7 and random.random() < 0.20:
+                    if state.can_act(ActionRaise):
+                        lo, hi = state.raise_bounds
+                        bet = int(pot * 0.55)
+                        return ActionRaise(min(hi, max(lo, bet)))
+            except:
+                pass
+            return ActionCheck()
+
+        # Default
         return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
-    def _value_bet(self, state, aggressive=False):
-        """Value betting subfunction for strong hands."""
+    def _value_bet(self, state, aggressive=False, multiplier=1.0):
+        """Value betting with information multiplier."""
         pot = state.pot
         cost = state.cost_to_call
 
         if cost > 0:
-            # Check/call in position when opposed
-            if state.can_act(ActionRaise) and aggressive:
+            # Raise/call when opposed
+            if aggressive and state.can_act(ActionRaise):
                 lo, hi = state.raise_bounds
-                bet = int(pot * 0.85) + state.opp_wager
+                bet = int(pot * 0.70 * multiplier) + state.opp_wager
                 return ActionRaise(min(hi, max(lo, bet)))
             return ActionCall() if state.can_act(ActionCall) else ActionCheck()
 
-        # Can bet for value
+        # Bet for value
         if state.can_act(ActionRaise):
             lo, hi = state.raise_bounds
-            # Strong value betting with bigger sizing
-            bet_size = pot * (0.95 if aggressive else 0.70)
-            return ActionRaise(min(hi, max(lo, int(bet_size))))
-        
-        return ActionCheck()
+            bet_size = (0.75 if aggressive else 0.55) * multiplier
+            bet = int(pot * bet_size)
+            return ActionRaise(min(hi, max(lo, bet)))
 
+        return ActionCheck()
 
 
 if __name__ == '__main__':

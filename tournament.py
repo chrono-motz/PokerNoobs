@@ -24,15 +24,12 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.p
 CONFIG_BAK = CONFIG_PATH + '.bak'
 
 DEFAULT_BOTS = [
-    ('v1_Baseline', './bot.py'),
     ('v2_Aggro',    './bot_v2_aggro.py'),
-    # ('v3_Shark',    './bot_v3_shark.py'),
+    ('v3_Shark',    './bot_v3_shark.py'),
     ('v4_Auction',  './bot_v4_auction.py'),
-    # ('v5_Position', './bot_v5_position.py'),
-    # ('v6_Champion', './bot_v6_champion.py'),
-    # ('v7_Final',    './bot_v7_final.py'),
-    ('ExampleBot',  './example_bot.py'),
-    ('sreeram', './bot_sreeram.py')
+    ('v7_Final',    './bot_v7_final.py'),
+    ('sreeram_v4',  './bot_sreeram_v4.py'),
+    ('sreeram_v5',  './bot_sreeram_v5.py')
 ]
 
 

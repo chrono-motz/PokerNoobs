@@ -5,6 +5,7 @@ from pkbot.actions import ActionFold, ActionCall, ActionCheck, ActionRaise, Acti
 from pkbot.states import GameInfo, PokerState
 from pkbot.base import BaseBot
 from pkbot.runner import parse_args, run_bot
+from equity import estimate_equity_monte_carlo
 
 import random
 
@@ -24,7 +25,7 @@ class Player(BaseBot):
         Returns:
         Nothing.
         '''
-        pass
+        self.last_equity = 0.5
 
     def on_hand_start(self, game_info: GameInfo, current_state: PokerState) -> None:
         '''
@@ -87,8 +88,16 @@ class Player(BaseBot):
         '''
 
         if current_state.street == 'auction':
-            v = random.uniform(0, 0.3)
-            return ActionBid(int(v * current_state.my_chips))
+            opp_known = current_state.opp_revealed_cards[:1]
+            estimate = estimate_equity_monte_carlo(
+                my_hole_cards=current_state.my_hand,
+                community_cards=current_state.board,
+                known_opp_cards=opp_known,
+                iterations=1500,
+            )
+            self.last_equity = estimate.win_rate + 0.5 * estimate.tie_rate
+            target_fraction = max(0.0, min(0.35, self.last_equity - 0.45))
+            return ActionBid(int(target_fraction * current_state.my_chips))
 
         if current_state.opp_revealed_cards:
             # Looking at info from bid
