@@ -1,17 +1,16 @@
 '''
-Bot Sreeram v5 — Ultra-Precision Edition
-Uses eval7 for accurate equity calculations:
-  - Auction: Smart bidding calibrated to true win rate potential
-  - Preflop: Position-aware with Chen scoring
-  - Postflop: eval7-powered equity decisions, not approximations
-  - Information: Exploit revealed cards with precise equity
+Bot Sreeram v5 — Championship Refinement
+Builds on v4's champion strategy with:
+  - More aggressive auction bidding (higher equity % bid)
+  - Better postflop aggression with draws
+  - Improved river bluffing based on board texture
+  - Tighter bankroll management for long-term edge
 '''
 from pkbot.actions import ActionFold, ActionCall, ActionCheck, ActionRaise, ActionBid
 from pkbot.states import GameInfo, PokerState
 from pkbot.base import BaseBot
 from pkbot.runner import parse_args, run_bot
-from equity import estimate_equity_monte_carlo
-from poker_utils import chen_score, RANK_MAP
+from poker_utils import chen_score, mc_equity, RANK_MAP
 import random
 
 BIG_BLIND = 20
@@ -83,20 +82,13 @@ class Player(BaseBot):
             self._has_opponent_info = True
 
     # ────────────────────────────────────────────────────────────────────────
-    # Equity Calculation using eval7
+    # Equity Calculation using poker_utils MC
     # ────────────────────────────────────────────────────────────────────────
 
-    def _estimate_equity(self, my_hand, board, opp_known, iterations=2000):
-        """Calculate equity using eval7 for precision."""
+    def _estimate_equity(self, my_hand, board, opp_known, rollouts=50):
+        """Calculate equity using poker_utils Monte Carlo."""
         try:
-            estimate = estimate_equity_monte_carlo(
-                my_hole_cards=my_hand,
-                community_cards=board if board else [],
-                known_opp_cards=opp_known,
-                iterations=iterations,
-            )
-            # Combine win rate with tie rate
-            equity = estimate.win_rate + 0.5 * estimate.tie_rate
+            equity = mc_equity(my_hand, board, opp_known, rollouts)
             return min(1.0, max(0.0, equity))
         except:
             return 0.5
@@ -168,32 +160,41 @@ class Player(BaseBot):
         return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
     # ────────────────────────────────────────────────────────────────────────
-    # AUCTION STRATEGY - EVAL7 POWERED
+    # AUCTION STRATEGY - MORE AGGRESSIVE THAN v4
     # ────────────────────────────────────────────────────────────────────────
 
     def _auction(self, state):
-        """Smart auction bidding using eval7 equity."""
-        # Use eval7 for more precise equity calculation
+        """Aggressive auction bidding calibrated to equity strength."""
+        # Use poker_utils for equity calculation
         opp_known = list(state.opp_revealed_cards[:1]) if state.opp_revealed_cards else []
-        equity = self._estimate_equity(state.my_hand, state.board, opp_known, iterations=1500)
+        equity = self._estimate_equity(state.my_hand, state.board, opp_known, rollouts=60)
         
         # Store for postflop reference
         self._last_equity = equity
         
-        # Smart bidding: bid more when equity significantly exceeds 0.5
-        # Inspired by example_bot: target_fraction = max(0.0, min(0.35, equity - 0.45))
-        target_fraction = max(0.0, min(0.30, equity - 0.45))
-        bid = int(target_fraction * state.my_chips)
+        # v5: More aggressive bidding than v4
+        pot = state.pot
+        if equity >= 0.78:
+            bid = int(pot * 0.25)
+        elif equity >= 0.68:
+            bid = int(pot * 0.18)
+        elif equity >= 0.58:
+            bid = int(pot * 0.12)
+        elif equity >= 0.48:
+            bid = int(pot * 0.07)
+        elif equity >= 0.38:
+            bid = int(pot * 0.03)
+        else:
+            bid = max(1, int(pot * 0.01))
         
-        # Minimum bid 1 chip
-        return ActionBid(max(1, bid))
+        return ActionBid(bid)
 
     # ────────────────────────────────────────────────────────────────────────
     # POST-FLOP STRATEGY - EVAL7 POWERED
     # ────────────────────────────────────────────────────────────────────────
 
     def _postflop(self, state, game_info):
-        """Post-flop using eval7 equity with revealed cards."""
+        """Post-flop strategy: more aggressive value betting and draw play."""
         # Time management
         if game_info.time_bank < 2.0:
             if state.cost_to_call == 0:
@@ -202,56 +203,70 @@ class Player(BaseBot):
                 return ActionCall()
             return ActionFold() if state.can_act(ActionFold) else ActionCheck()
 
-        # Calculate precise equity using eval7
+        # Calculate precise equity
         opp_known = list(state.opp_revealed_cards) if state.opp_revealed_cards else []
-        iterations = 1500 if state.street == 'flop' else 2000
-        equity = self._estimate_equity(state.my_hand, state.board, opp_known, iterations=iterations)
+        rollouts = 60 if state.street == 'flop' else 80
+        equity = self._estimate_equity(state.my_hand, state.board, opp_known, rollouts=rollouts)
 
         pot = state.pot
         cost = state.cost_to_call
 
-        # Information multiplier
-        info_multiplier = 1.25 if self._has_opponent_info else 1.0
+        # Information multiplier - exploit revealed cards more
+        info_multiplier = 1.35 if self._has_opponent_info else 1.0
 
         # Pot odds
         po = cost / (pot + cost + 1e-6) if cost > 0 else 0
 
-        # ─ STRONG EQUITY (80%+) ─
-        if equity >= 0.80:
+        # ─ PREMIUM EQUITY (85%+) ─
+        if equity >= 0.85:
             return self._value_bet(state, aggressive=True, multiplier=info_multiplier)
 
-        # ─ GOOD EQUITY (63%+) ─
-        if equity >= 0.63:
+        # ─ STRONG EQUITY (70%+) ─
+        if equity >= 0.70:
+            return self._value_bet(state, aggressive=True, multiplier=1.15)
+
+        # ─ GOOD EQUITY (58%+) ─
+        if equity >= 0.58:
             return self._value_bet(state, aggressive=False, multiplier=info_multiplier)
 
-        # ─ MODERATE EQUITY (50%+) ─
-        if equity >= 0.50:
+        # ─ MODERATE EQUITY (45%+) ─
+        if equity >= 0.45:
             if cost == 0:
                 if state.can_act(ActionRaise):
                     lo, hi = state.raise_bounds
-                    bet = int(pot * 0.45 * info_multiplier)
+                    bet = int(pot * 0.40 * info_multiplier)
                     return ActionRaise(min(hi, max(lo, bet)))
                 return ActionCheck()
             if equity > po + 0.05:
                 return ActionCall() if state.can_act(ActionCall) else ActionCheck()
+            if state.street == 'river' and equity > 0.45:
+                return ActionCall() if state.can_act(ActionCall) else ActionCheck()
             return ActionCheck() if state.can_act(ActionCheck) else ActionFold()
 
-        # ─ MARGINAL EQUITY (35-50%) ─
-        if equity >= 0.35:
+        # ─ DRAW EQUITY (30-45%) ─
+        if equity >= 0.30:
             if cost == 0:
+                # More aggressive on turn/river with draws
+                if state.street in ['turn', 'river']:
+                    if random.random() < 0.35 and state.can_act(ActionRaise):
+                        lo, hi = state.raise_bounds
+                        return ActionRaise(min(hi, max(lo, int(pot * 0.40))))
                 return ActionCheck()
-            if equity > po and cost <= pot * 0.35:
+            # Draws: call if pot odds support it
+            if equity > po - 0.05:
                 return ActionCall() if state.can_act(ActionCall) else ActionCheck()
             return ActionFold() if state.can_act(ActionFold) else ActionCheck()
 
-        # ─ BLUFF EQUITY (20-35%) ─
-        if equity >= 0.20 and self._has_opponent_info and cost == 0:
+        # ─ BLUFF EQUITY (15-30%) ─
+        if equity >= 0.15 and self._has_opponent_info and cost == 0:
             try:
                 opp_rank = RANK_MAP.get(state.opp_revealed_cards[0][0], 0)
-                if opp_rank <= 7 and random.random() < 0.20:
-                    if state.can_act(ActionRaise):
+                # Bluff more aggressively on turn/river
+                if opp_rank <= 7:
+                    bluff_freq = 0.30 if state.street == 'river' else 0.15
+                    if random.random() < bluff_freq and state.can_act(ActionRaise):
                         lo, hi = state.raise_bounds
-                        bet = int(pot * 0.55)
+                        bet = int(pot * 0.65)
                         return ActionRaise(min(hi, max(lo, bet)))
             except:
                 pass

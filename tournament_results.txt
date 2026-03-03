@@ -1,0 +1,21 @@
+
+🃏 POKER BOT TOURNAMENT
+   2 bots × 2 match(es) per pair = 2 total matches
+   Bots: bot_sreeram_working, bot_sreeram_advanced
+======================================================================
+
+[1/2] bot_sreeram_working vs bot_sreeram_advanced  →  bot_sreeram_working: +0  |  bot_sreeram_advanced: +0  |  Winner: TIE
+
+[2/2] bot_sreeram_working vs bot_sreeram_advanced  →  bot_sreeram_working: +0  |  bot_sreeram_advanced: +0  |  Winner: TIE
+
+======================================================================
+🏆 LEADERBOARD
+======================================================================
+#    Bot                Bankroll      W-L    Win%  Timeouts
+----------------------------------------------------------------------
+🥇1   bot_sreeram_working         +0   0-2      0.0%        0
+🥈2   bot_sreeram_advanced         +0   0-2      0.0%        0
+
+======================================================================
+🏆 Champion: bot_sreeram_working (Total Bankroll: +0)
+======================================================================

@@ -365,7 +365,7 @@ class Player(BaseBot):
             elif opp_avg < 20:
                 bid_value = max(bid_value, opp_avg + 5)
 
-        bid = max(0, min(int(bid_value), chips))
+        bid = max(1, min(int(bid_value), chips))
         return ActionBid(bid)
 
     # ── Postflop ─────────────────────────────────────────────────────────────
